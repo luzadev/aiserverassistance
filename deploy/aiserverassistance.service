@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Server Assistance - bot Telegram sysadmin (Claude Code)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Modifica User e WorkingDirectory in base a dove hai clonato il progetto
+# e a quale utente è loggato in Claude Code.
+User=root
+WorkingDirectory=/opt/aiserverassistance
+ExecStart=/usr/bin/node src/bot.js
+Restart=on-failure
+RestartSec=5
+# Claude Code legge le credenziali dalla home dell'utente:
+Environment=HOME=/root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "name": "web1",
+      "host": "192.168.14.38",
+      "user": "root",
+      "description": "Server web principale (nginx + php-fpm)"
+    },
+    {
+      "name": "db1",
+      "host": "192.168.30.95",
+      "user": "root",
+      "description": "Database MySQL di produzione"
+    },
+    {
+      "name": "app-it",
+      "host": "192.168.14.203",
+      "user": "it",
+      "description": "Applicativo interno reparto IT"
+    }
+  ]
+}

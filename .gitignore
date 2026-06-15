@@ -1,0 +1,8 @@
+node_modules/
+.env
+servers.json
+*.log
+.DS_Store
+.session-store.json
+workdir/mcp-*.json
+workdir/serverops.mcp.json
