@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Bot, InlineKeyboard, GrammyError } from 'grammy';
+import { run } from '@grammyjs/runner';
 import { config, loadServers } from './config.js';
 import { createApprovalBridge } from './bridge.js';
 import { runClaude } from './claude.js';
@@ -234,9 +235,13 @@ await bridge.start();
 console.log(`Bridge approvazioni in ascolto su ${BRIDGE_URL}`);
 
 await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
-bot.start({
-  onStart: (info) => console.log(`Bot @${info.username} avviato. In ascolto…`),
-});
+await bot.init();
+// Runner: elabora gli update in CONCORRENZA. Indispensabile perché il click su
+// "Approva/Nega" (callback_query) venga gestito mentre il gestore del messaggio
+// è ancora in attesa che Claude completi la richiesta (altrimenti deadlock).
+const runner = run(bot);
+console.log(`Bot @${bot.botInfo.username} avviato (elaborazione concorrente). In ascolto…`);
 
-process.once('SIGINT', () => bot.stop());
-process.once('SIGTERM', () => bot.stop());
+const stop = () => { if (runner.isRunning()) runner.stop(); };
+process.once('SIGINT', stop);
+process.once('SIGTERM', stop);
