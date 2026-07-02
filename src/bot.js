@@ -4,6 +4,7 @@
 // - ospita il bridge HTTP locale che gestisce le approvazioni dei comandi
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { Bot, InlineKeyboard, GrammyError } from 'grammy';
 import { run } from '@grammyjs/runner';
@@ -39,6 +40,33 @@ function getMode(chatId) {
 }
 function sessionKey(chatId, m) {
   return m.mode === 'project' ? `${chatId}:proj:${m.project.name}` : `${chatId}:sys`;
+}
+
+// Marker per "riparti da zero" dopo /reset in modalità progetto (evita che
+// venga riagganciata la cronologia importata).
+const FRESH = '__fresh__';
+
+// Trova l'ID dell'ultima sessione Claude Code registrata per la cartella di un
+// progetto (incluse le cronologie importate). Claude Code indicizza le sessioni
+// in ~/.claude/projects/<percorso-con-slash-sostituiti-da-trattini>/<id>.jsonl
+function latestProjectSessionId(projectPath) {
+  try {
+    const encoded = projectPath.replace(/\//g, '-');
+    const dir = path.join(os.homedir(), '.claude', 'projects', encoded);
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+    let best;
+    let bestM = -1;
+    for (const f of files) {
+      const m = fs.statSync(path.join(dir, f)).mtimeMs;
+      if (m > bestM) {
+        bestM = m;
+        best = f;
+      }
+    }
+    return best ? best.replace(/\.jsonl$/, '') : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function loadSessions() {
@@ -159,10 +187,16 @@ bot.command('servers', async (ctx) => {
 
 bot.command('reset', async (ctx) => {
   if (!isAllowed(ctx.from?.id)) return;
-  const prefix = `${ctx.chat.id}:`;
-  for (const k of [...sessions.keys()]) if (k.startsWith(prefix)) sessions.delete(k);
+  const m = getMode(ctx.chat.id);
+  const key = sessionKey(ctx.chat.id, m);
+  if (m.mode === 'project') {
+    // Fresh esplicito: NON riagganciare la cronologia importata.
+    sessions.set(key, FRESH);
+  } else {
+    sessions.delete(key);
+  }
   saveSessions();
-  await ctx.reply('🔄 Conversazione azzerata. Ripartiamo da capo.');
+  await ctx.reply('🔄 Conversazione azzerata. Ripartiamo da capo (senza riprendere la cronologia).');
 });
 
 bot.command('progetti', async (ctx) => {
@@ -211,10 +245,16 @@ bot.command('progetto', async (ctx) => {
     return;
   }
   modes.set(String(ctx.chat.id), { mode: 'project', project: { name: p.name, path: p.path } });
+  const key = sessionKey(ctx.chat.id, { mode: 'project', project: p });
+  const stored = sessions.get(key);
+  const willResume = stored && stored !== FRESH ? true : !!latestProjectSessionId(p.path);
   await ctx.reply(
     `🗂️ Modalità progetto: <b>${escapeHtml(p.name)}</b>\n<code>${escapeHtml(p.path)}</code>\n\n` +
+      (willResume
+        ? '🧠 Riprenderò la conversazione precedente su questo progetto (cronologia trovata).\n'
+        : '') +
       'Ora chiedimi pure di leggere/analizzare/modificare il codice. Le modifiche richiederanno la tua conferma.\n' +
-      'Torna al sysadmin con /sys.',
+      'Con /reset riparti da zero (senza cronologia). Torna al sysadmin con /sys.',
     { parse_mode: 'HTML' },
   );
 });
@@ -265,7 +305,14 @@ bot.on('message:text', async (ctx) => {
   try {
     const m = getMode(chatId);
     const key = sessionKey(chatId, m);
-    const sessionId = sessions.get(key);
+    let sessionId = sessions.get(key);
+    if (sessionId === FRESH) {
+      sessionId = undefined; // /reset richiesto: parti pulito
+    } else if (!sessionId && m.mode === 'project') {
+      // Prima volta su questo progetto: riprendi l'ultima sessione registrata
+      // (incluse le cronologie importate), se esiste.
+      sessionId = latestProjectSessionId(m.project.path);
+    }
     const res = await runClaude({
       prompt: ctx.message.text,
       sessionId,
