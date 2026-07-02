@@ -1,0 +1,14 @@
+{
+  "projects": [
+    {
+      "name": "mioprogetto",
+      "path": "/opt/progetti/mioprogetto",
+      "description": "App Laravel del gestionale X"
+    },
+    {
+      "name": "landing",
+      "path": "/opt/progetti/landing-espochic",
+      "description": "Sito vetrina Next.js"
+    }
+  ]
+}

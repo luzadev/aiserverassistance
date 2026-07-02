@@ -1,6 +1,7 @@
 node_modules/
 .env
 servers.json
+projects.json
 *.log
 .DS_Store
 .session-store.json

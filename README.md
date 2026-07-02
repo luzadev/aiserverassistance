@@ -80,10 +80,43 @@ quale server ti riferisci.
 |---|---|
 | `/start` | Messaggio di benvenuto |
 | `/servers` | Elenca i server configurati |
+| `/progetti` | Elenca i progetti configurati (modalità progetto) |
+| `/progetto <nome>` | Entra in modalità progetto su quel progetto |
+| `/sys` | Torna alla modalità sysadmin (server) |
 | `/reset` | Azzera la conversazione (nuova sessione Claude) |
 | `/whoami` | Mostra il tuo ID Telegram |
 
 Per il resto: **scrivi in italiano** cosa ti serve.
+
+## Modalità progetto (lavorare sul codice)
+
+Oltre al sysadmin, il bot può aiutarti sui **progetti di codice presenti sul server**.
+Elenca i progetti in `projects.json` (vedi `projects.example.json`):
+
+```json
+{
+  "projects": [
+    { "name": "mioprogetto", "path": "/opt/progetti/mioprogetto", "description": "App Laravel gestionale X" }
+  ]
+}
+```
+
+Poi su Telegram: `/progetto mioprogetto`. Da quel momento Claude lavora nella cartella
+del progetto (carica automaticamente il `CLAUDE.md` del progetto se presente):
+
+- **legge ed esplora** il codice liberamente (Read/Grep/Glob — senza chiedere);
+- ogni **modifica** (Write/Edit/Bash, ecc.) ti viene mostrata su Telegram e attende
+  la tua **approzione** con i pulsanti, esattamente come per i comandi sui server.
+
+`/sys` per tornare alla modalità sysadmin. Le conversazioni di sysadmin e di ogni
+progetto hanno **memoria separata**.
+
+**Portare qui i progetti dal locale**: sono semplici cartelle. Con `git clone` (se su
+GitHub) oppure con `rsync` dal tuo computer, es.:
+```bash
+rsync -avz --exclude node_modules ~/Progetti/mioprogetto/ root@SERVER:/opt/progetti/mioprogetto/
+```
+Il `CLAUDE.md` e la cartella `.claude/` del progetto viaggiano insieme ai file.
 
 ## Avvio come servizio (systemd)
 

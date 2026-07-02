@@ -46,7 +46,7 @@ function fmtResult(server, command, res) {
 
 // Richiede approvazione umana al bot via bridge HTTP locale. Blocca finché
 // l'utente non risponde su Telegram (o scade il timeout → negato).
-async function requestApproval({ server, command, reason }) {
+async function requestApproval({ title, body, code }) {
   if (!CHAT_ID) {
     return { decision: 'deny', reason: 'CHAT_ID non impostato per questa sessione' };
   }
@@ -54,14 +54,7 @@ async function requestApproval({ server, command, reason }) {
     const resp = await fetch(`${BRIDGE_URL}/approval`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        token: BRIDGE_TOKEN,
-        chatId: CHAT_ID,
-        server: server.name,
-        host: server.host,
-        command,
-        reason: reason || '',
-      }),
+      body: JSON.stringify({ token: BRIDGE_TOKEN, chatId: CHAT_ID, title, body: body || '', code: code || '' }),
     });
     if (!resp.ok) {
       return { decision: 'deny', reason: `bridge HTTP ${resp.status}` };
@@ -69,6 +62,28 @@ async function requestApproval({ server, command, reason }) {
     return await resp.json();
   } catch (e) {
     return { decision: 'deny', reason: `bridge non raggiungibile: ${e.message}` };
+  }
+}
+
+// Riassume una chiamata a tool nativo di Claude Code per la conferma su Telegram.
+function describeToolCall(tool, input = {}) {
+  switch (tool) {
+    case 'Write':
+      return { title: '📝 Scrittura file', body: input.file_path || '', code: clip(input.content || '', 1500) };
+    case 'Edit':
+      return { title: '✏️ Modifica file', body: input.file_path || '', code: `- ${clip(input.old_string || '', 700)}\n+ ${clip(input.new_string || '', 700)}` };
+    case 'MultiEdit':
+      return {
+        title: '✏️ Modifiche multiple',
+        body: input.file_path || '',
+        code: (input.edits || []).map((e) => `- ${clip(e.old_string, 200)}\n+ ${clip(e.new_string, 200)}`).join('\n---\n'),
+      };
+    case 'Bash':
+      return { title: '💻 Comando shell (progetto)', body: input.description || '', code: input.command || '' };
+    case 'NotebookEdit':
+      return { title: '📓 Modifica notebook', body: input.notebook_path || '', code: clip(input.new_source || '', 1200) };
+    default:
+      return { title: `🔧 ${tool}`, body: '', code: clip(JSON.stringify(input, null, 2), 1200) };
   }
 }
 
@@ -133,7 +148,11 @@ server.tool(
     } catch (e) {
       return { content: [{ type: 'text', text: e.message }], isError: true };
     }
-    const decision = await requestApproval({ server: srv, command, reason });
+    const decision = await requestApproval({
+      title: `⚠️ Comando su ${srv.name} (${srv.host})`,
+      body: reason || '',
+      code: command,
+    });
     if (decision.decision !== 'allow') {
       return {
         content: [{
@@ -142,9 +161,27 @@ server.tool(
         }],
       };
     }
-    const cmd = decision.command || command; // l'utente potrebbe aver modificato il comando
-    const res = await sshExec(srv, cmd, { timeoutMs: 300000 });
-    return { content: [{ type: 'text', text: `[APPROVATO ed eseguito]\n${fmtResult(srv, cmd, res)}` }] };
+    const res = await sshExec(srv, command, { timeoutMs: 300000 });
+    return { content: [{ type: 'text', text: `[APPROVATO ed eseguito]\n${fmtResult(srv, command, res)}` }] };
+  },
+);
+
+// Strumento di prompt-permessi: usato come --permission-prompt-tool in "modalità
+// progetto". Claude lo invoca quando vuole usare un tool non pre-autorizzato
+// (Write/Edit/Bash…): chiediamo conferma all'utente su Telegram e rispondiamo
+// con il contratto behavior allow/deny atteso da Claude Code.
+server.tool(
+  'approve',
+  'Strumento interno di approvazione permessi (non invocarlo direttamente).',
+  { tool_name: z.string().optional(), input: z.any().optional() },
+  async ({ tool_name, input }) => {
+    const { title, body, code } = describeToolCall(tool_name, input || {});
+    const decision = await requestApproval({ title, body, code });
+    const payload =
+      decision.decision === 'allow'
+        ? { behavior: 'allow', updatedInput: input || {} }
+        : { behavior: 'deny', message: `Negato dall'utente${decision.reason ? ` (${decision.reason})` : ''}` };
+    return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
   },
 );
 

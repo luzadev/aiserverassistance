@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Bot, InlineKeyboard, GrammyError } from 'grammy';
 import { run } from '@grammyjs/runner';
-import { config, loadServers } from './config.js';
+import { config, loadServers, loadProjects, findProject } from './config.js';
 import { createApprovalBridge } from './bridge.js';
 import { runClaude } from './claude.js';
 
@@ -29,9 +29,17 @@ const BRIDGE_URL = `http://${config.bridgeHost}:${config.bridgePort}`;
 const SESSION_STORE = path.join(config.root, '.session-store.json');
 
 // ─── Stato ───────────────────────────────────────────────────────────────────
-const sessions = loadSessions(); // chatId -> sessionId
+const sessions = loadSessions(); // chiave contesto -> sessionId
 const busy = new Set(); // chatId attualmente in elaborazione
 const approvalByMsg = new Map(); // messageId -> { htmlText }
+const modes = new Map(); // chatId -> { mode:'sysadmin'|'project', project?:{name,path} }
+
+function getMode(chatId) {
+  return modes.get(String(chatId)) || { mode: 'sysadmin' };
+}
+function sessionKey(chatId, m) {
+  return m.mode === 'project' ? `${chatId}:proj:${m.project.name}` : `${chatId}:sys`;
+}
 
 function loadSessions() {
   try {
@@ -82,13 +90,12 @@ const bridge = createApprovalBridge({
   port: config.bridgePort,
   token: BRIDGE_TOKEN,
   timeoutMs: config.approvalTimeoutMs,
-  async sendApprovalMessage({ chatId, id, server, host, command, reason }) {
+  async sendApprovalMessage({ chatId, id, title, body, code }) {
     const html =
-      '⚠️ <b>Richiesta di esecuzione comando</b>\n' +
-      `Server: <b>${escapeHtml(server)}</b> (<code>${escapeHtml(host)}</code>)\n` +
-      (reason ? `Motivo: ${escapeHtml(reason)}\n` : '') +
-      `\n<pre>${escapeHtml(command)}</pre>\n` +
-      'Approvi l\'esecuzione?';
+      `⚠️ <b>${escapeHtml(title || 'Richiesta di conferma')}</b>\n` +
+      (body ? `${escapeHtml(body)}\n` : '') +
+      (code ? `\n<pre>${escapeHtml(code)}</pre>\n` : '') +
+      'Approvi?';
     const kb = new InlineKeyboard().text('✅ Approva', `ok:${id}`).text('❌ Nega', `no:${id}`);
     const msg = await bot.api.sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: kb });
     approvalByMsg.set(msg.message_id, { htmlText: html });
@@ -128,7 +135,8 @@ bot.command('start', async (ctx) => {
       '• "Quanto spazio disco è rimasto su db1?"\n' +
       '• "Riavvia il servizio php-fpm su web1"\n\n' +
       'Indagherò in sola lettura e, per ogni comando che modifica qualcosa, ti chiederò conferma con dei pulsanti.\n\n' +
-      'Comandi: /servers (elenco server) · /reset (nuova conversazione) · /whoami (il tuo ID)',
+      '🗂️ Modalità progetto: con /progetto <nome> posso anche leggere e modificare il codice di un progetto presente sul server (le modifiche restano soggette a conferma). /sys per tornare al sysadmin.\n\n' +
+      'Comandi: /servers · /progetti · /progetto <nome> · /sys · /reset · /whoami',
   );
 });
 
@@ -151,9 +159,70 @@ bot.command('servers', async (ctx) => {
 
 bot.command('reset', async (ctx) => {
   if (!isAllowed(ctx.from?.id)) return;
-  sessions.delete(String(ctx.chat.id));
+  const prefix = `${ctx.chat.id}:`;
+  for (const k of [...sessions.keys()]) if (k.startsWith(prefix)) sessions.delete(k);
   saveSessions();
   await ctx.reply('🔄 Conversazione azzerata. Ripartiamo da capo.');
+});
+
+bot.command('progetti', async (ctx) => {
+  if (!isAllowed(ctx.from?.id)) return;
+  let projects = [];
+  try {
+    projects = loadProjects();
+  } catch (e) {
+    await ctx.reply(`Errore lettura progetti: ${e.message}`);
+    return;
+  }
+  if (projects.length === 0) {
+    await ctx.reply('Nessun progetto configurato. Aggiungili in projects.json sul server.');
+    return;
+  }
+  const lines = projects.map(
+    (p) => `• <b>${escapeHtml(p.name)}</b>${p.description ? ' — ' + escapeHtml(p.description) : ''}\n  <code>${escapeHtml(p.path)}</code>`,
+  );
+  await ctx.reply(
+    `Progetti disponibili:\n${lines.join('\n')}\n\nEntra con <code>/progetto &lt;nome&gt;</code>.`,
+    { parse_mode: 'HTML' },
+  );
+});
+
+bot.command('progetto', async (ctx) => {
+  if (!isAllowed(ctx.from?.id)) return;
+  const name = (ctx.match || '').trim();
+  if (!name) {
+    await ctx.reply('Uso: /progetto <nome>. Vedi /progetti per l\'elenco.');
+    return;
+  }
+  let projects = [];
+  try {
+    projects = loadProjects();
+  } catch (e) {
+    await ctx.reply(`Errore lettura progetti: ${e.message}`);
+    return;
+  }
+  const p = findProject(projects, name);
+  if (!p) {
+    await ctx.reply(`Progetto "${name}" non trovato. Vedi /progetti.`);
+    return;
+  }
+  if (!fs.existsSync(p.path)) {
+    await ctx.reply(`La cartella del progetto non esiste sul server: ${p.path}`);
+    return;
+  }
+  modes.set(String(ctx.chat.id), { mode: 'project', project: { name: p.name, path: p.path } });
+  await ctx.reply(
+    `🗂️ Modalità progetto: <b>${escapeHtml(p.name)}</b>\n<code>${escapeHtml(p.path)}</code>\n\n` +
+      'Ora chiedimi pure di leggere/analizzare/modificare il codice. Le modifiche richiederanno la tua conferma.\n' +
+      'Torna al sysadmin con /sys.',
+    { parse_mode: 'HTML' },
+  );
+});
+
+bot.command(['sys', 'esci'], async (ctx) => {
+  if (!isAllowed(ctx.from?.id)) return;
+  modes.set(String(ctx.chat.id), { mode: 'sysadmin' });
+  await ctx.reply('🛠️ Modalità sysadmin (server). Scrivimi cosa ti serve.');
 });
 
 // ─── Pulsanti di approvazione ──────────────────────────────────────────────────
@@ -194,17 +263,22 @@ bot.on('message:text', async (ctx) => {
   ctx.api.sendChatAction(ctx.chat.id, 'typing').catch(() => {});
 
   try {
-    const sessionId = sessions.get(chatId);
+    const m = getMode(chatId);
+    const key = sessionKey(chatId, m);
+    const sessionId = sessions.get(key);
     const res = await runClaude({
       prompt: ctx.message.text,
       sessionId,
       chatId,
       bridgeUrl: BRIDGE_URL,
       bridgeToken: BRIDGE_TOKEN,
+      mode: m.mode,
+      projectPath: m.project?.path,
+      projectName: m.project?.name,
     });
 
     if (res.sessionId) {
-      sessions.set(chatId, res.sessionId);
+      sessions.set(key, res.sessionId);
       saveSessions();
     }
 

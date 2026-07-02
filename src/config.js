@@ -48,6 +48,7 @@ export const config = {
   bridgePort: Number(process.env.BRIDGE_PORT || 8765),
   approvalTimeoutMs: Number(process.env.APPROVAL_TIMEOUT_MS || 240000),
   serversFile: resolveMaybeRelative(process.env.SERVERS_FILE, './servers.json'),
+  projectsFile: resolveMaybeRelative(process.env.PROJECTS_FILE, './projects.json'),
   workdir: resolveMaybeRelative(process.env.WORKDIR, './workdir'),
 };
 
@@ -75,4 +76,25 @@ export function findServer(servers, name) {
   return servers.find(
     (s) => s.name.toLowerCase() === target || s.host.toLowerCase() === target,
   );
+}
+
+// Registro dei progetti locali sul server (per la "modalità progetto").
+// Ritorna [] se il file non esiste (la funzione è opzionale).
+export function loadProjects(projectsFile = config.projectsFile) {
+  if (!fs.existsSync(projectsFile)) return [];
+  const data = JSON.parse(fs.readFileSync(projectsFile, 'utf8'));
+  const projects = Array.isArray(data) ? data : data.projects;
+  if (!Array.isArray(projects)) return [];
+  for (const p of projects) {
+    if (!p.name || !p.path) {
+      throw new Error('Ogni progetto deve avere almeno "name" e "path"');
+    }
+  }
+  return projects;
+}
+
+export function findProject(projects, name) {
+  if (!name) return undefined;
+  const target = String(name).trim().toLowerCase();
+  return projects.find((p) => p.name.toLowerCase() === target);
 }

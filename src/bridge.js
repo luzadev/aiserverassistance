@@ -64,10 +64,9 @@ export function createApprovalBridge({
         messageId = await sendApprovalMessage({
           chatId: data.chatId,
           id,
-          server: data.server,
-          host: data.host,
-          command: data.command,
-          reason: data.reason,
+          title: data.title,
+          body: data.body,
+          code: data.code,
         });
       } catch (e) {
         res.writeHead(200, { 'content-type': 'application/json' });

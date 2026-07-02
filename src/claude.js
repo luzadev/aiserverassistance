@@ -24,6 +24,16 @@ export const SYSTEM_PROMPT = [
   "Stile della risposta finale (è una chat Telegram, in italiano): concisa e leggibile. Riassumi cosa hai trovato e cosa hai fatto, evidenzia la causa e l'eventuale fix in poche righe. Non incollare output lunghissimi: cita solo le parti rilevanti.",
 ].join('\n');
 
+export function projectPrompt(name) {
+  return [
+    `Stai assistendo l'utente via Telegram sul progetto "${name}", che si trova nella cartella di lavoro corrente sul server.`,
+    'Hai i tuoi strumenti nativi per leggere ed esplorare il codice (Read, Grep, Glob): usali liberamente per capire il contesto. Leggi il CLAUDE.md del progetto se presente.',
+    'Le operazioni che MODIFICANO qualcosa (Write, Edit, MultiEdit, Bash, ecc.) richiedono l\'approvazione dell\'utente: gli verranno mostrate su Telegram con dei pulsanti. Non c\'è modo di aggirarle. Se una modifica viene negata, proponi un\'alternativa o chiedi chiarimenti.',
+    'Procedi con metodo: prima esplora e capisci, poi proponi/applichi le modifiche una alla volta con messaggi chiari.',
+    'Rispondi in italiano, in modo conciso (è una chat Telegram): spiega cosa hai trovato e cosa hai fatto senza incollare interi file.',
+  ].join('\n');
+}
+
 // Scrive il file di configurazione MCP che `claude` userà per lanciare il server
 // serverops. I valori (compreso il CHAT_ID per-richiesta) vengono inseriti come
 // LETTERALI nel blocco env: così arrivano al server MCP a prescindere dal supporto
@@ -52,26 +62,42 @@ export function writeMcpConfig({ chatId, bridgeUrl, bridgeToken, serversFile }) 
 
 /**
  * Lancia una richiesta a Claude in headless.
- * @param {{prompt:string, sessionId?:string, chatId:string|number, bridgeUrl:string, bridgeToken:string}} p
+ * @param {{prompt:string, sessionId?:string, chatId:string|number, bridgeUrl:string, bridgeToken:string, mode?:'sysadmin'|'project', projectPath?:string, projectName?:string}} p
  * @returns {Promise<{result:string, sessionId?:string, cost?:number, isError:boolean, stderr:string}>}
  */
-export function runClaude({ prompt, sessionId, chatId, bridgeUrl, bridgeToken }) {
+export function runClaude({ prompt, sessionId, chatId, bridgeUrl, bridgeToken, mode = 'sysadmin', projectPath, projectName }) {
   const mcpConfigPath = writeMcpConfig({
     chatId,
     bridgeUrl,
     bridgeToken,
     serversFile: config.serversFile,
   });
+
   const args = [
     '-p', prompt,
     '--output-format', 'json',
     '--model', config.claudeModel,
-    '--allowedTools', 'mcp__serverops__list_servers,mcp__serverops__run_readonly,mcp__serverops__run_privileged',
-    '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,NotebookEdit',
     '--mcp-config', mcpConfigPath,
     '--strict-mcp-config',
-    '--append-system-prompt', SYSTEM_PROMPT,
   ];
+
+  let cwd;
+  if (mode === 'project') {
+    // Modalità progetto: strumenti nativi di lettura auto-consentiti; le modifiche
+    // (Write/Edit/Bash/…) non sono in allowedTools quindi passano dal
+    // permission-prompt-tool → conferma su Telegram. Il CLAUDE.md del progetto
+    // viene caricato automaticamente (cwd = cartella del progetto).
+    cwd = projectPath;
+    args.push('--allowedTools', 'Read,Glob,Grep,LS,TodoWrite');
+    args.push('--permission-prompt-tool', 'mcp__serverops__approve');
+    args.push('--append-system-prompt', projectPrompt(projectName || 'progetto'));
+  } else {
+    // Modalità sysadmin: solo strumenti serverops, nessuna shell/FS locale.
+    cwd = config.workdir;
+    args.push('--allowedTools', 'mcp__serverops__list_servers,mcp__serverops__run_readonly,mcp__serverops__run_privileged');
+    args.push('--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,NotebookEdit');
+    args.push('--append-system-prompt', SYSTEM_PROMPT);
+  }
   if (sessionId) args.push('--resume', sessionId);
 
   // I valori sono già letterali nel file MCP; li passiamo anche via env per
@@ -86,7 +112,7 @@ export function runClaude({ prompt, sessionId, chatId, bridgeUrl, bridgeToken })
 
   return new Promise((resolve) => {
     // stdin ignorato: il prompt è passato via -p, così claude non attende stdin.
-    const child = spawn(config.claudeBin, args, { cwd: config.workdir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(config.claudeBin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
