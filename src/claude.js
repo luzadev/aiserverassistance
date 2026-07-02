@@ -79,6 +79,11 @@ export function runClaude({ prompt, sessionId, chatId, bridgeUrl, bridgeToken, m
     '--model', config.claudeModel,
     '--mcp-config', mcpConfigPath,
     '--strict-mcp-config',
+    // SICUREZZA: carica solo i settings a livello utente (root), NON quelli di
+    // progetto/locali (.claude/settings*.json). Un repo può contenere regole
+    // permissions.allow che altrimenti auto-approverebbero comandi bypassando
+    // la conferma su Telegram. Il CLAUDE.md del progetto resta comunque caricato.
+    '--setting-sources', 'user',
   ];
 
   let cwd;
